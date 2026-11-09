@@ -140,13 +140,14 @@ class MessageTest(unittest.TestCase):
     def test_size_emoji(self):
         for additions, deletions, emoji in (
             (399, 0, ":slot_machine:"),
-            (200, 200, ":large_green_circle:"),
+            (0, 1599, ":slot_machine:"),  # removals count a quarter
+            (300, 400, ":large_green_circle:"),
             (749, 0, ":large_green_circle:"),
             (750, 0, ":large_orange_circle:"),
             (1499, 0, ":large_orange_circle:"),
             (1500, 0, ":warning:"),
-            (100, 1901, ":warning:"),
-            (100, 1900, ":large_green_circle:"),
+            (100, 7604, ":warning:"),
+            (100, 7600, ":large_green_circle:"),
         ):
             self.assertEqual(tracker.size_emoji(additions, deletions), emoji, (additions, deletions))
 

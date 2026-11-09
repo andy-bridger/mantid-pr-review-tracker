@@ -333,7 +333,8 @@ def _fallback(pr: PullRequest) -> str:
 
 def size_emoji(additions: int, deletions: int) -> str:
     """How big a review the PR is, at a glance."""
-    total = additions + deletions
+    # removed lines are much quicker to review than added ones, e.g. a revert
+    total = additions + deletions / 4
     if total < 400:
         return ":slot_machine:"
     if total > 2000 or additions >= 1500:
