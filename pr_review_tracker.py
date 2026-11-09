@@ -69,8 +69,9 @@ class PullRequest:
     additions: int
     deletions: int
     changed_files: int
-    # the rollup's own state, kept for the sweep summary; None when GitHub returned no rollup
+    # kept for the sweep log; ci_state is None when GitHub returned no rollup
     ci_state: str | None = None
+    ci_contexts: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -87,11 +88,15 @@ class SlackError(RuntimeError):
         self.error = error
 
 
+def context_names(rollup: dict | None) -> frozenset[str]:
+    # a context the token can't see comes back as an empty node
+    return frozenset(node.get("name") or node.get("context") or "<hidden>" for node in (rollup or {}).get("contexts", {}).get("nodes", []))
+
+
 def ci_green(rollup: dict | None) -> bool:
     if not rollup or rollup["state"] != "SUCCESS":
         return False
-    names = {node.get("name") or node.get("context") for node in rollup["contexts"]["nodes"]}
-    return all(required in names for required in REQUIRED_CONTEXTS)
+    return context_names(rollup).issuperset(REQUIRED_CONTEXTS)
 
 
 def decide(pr: PullRequest, thread: Thread | None) -> str | None:
@@ -139,6 +144,7 @@ def _pull_request(node: dict) -> PullRequest:
         deletions=node["deletions"],
         changed_files=node["changedFiles"],
         ci_state=(commit["statusCheckRollup"] or {}).get("state"),
+        ci_contexts=context_names(commit["statusCheckRollup"]),
     )
 
 
@@ -362,6 +368,10 @@ def sweep(github: GitHub, slack: Slack) -> int:
     # a token that can't read the tracked repo's checks gets no rollup at all, rather than an error
     if prs and states[None] == len(prs):
         print("::warning::No open PR has a visible CI status - the GitHub token probably can't read the tracked repo's checks")
+    for pr in prs.values():
+        if pr.ci_state == "SUCCESS" and not pr.ci_green and not pr.is_draft and not pr.assignees:
+            missing = sorted(set(REQUIRED_CONTEXTS) - pr.ci_contexts)
+            print(f"#{pr.number}: CI is SUCCESS but {missing} not reported; saw {sorted(pr.ci_contexts)}")
     gone = threads.keys() - prs.keys()
     if gone and not prs:
         print("::warning::No open PRs returned but threads exist - not deleting anything")
