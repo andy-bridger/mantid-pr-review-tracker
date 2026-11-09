@@ -44,7 +44,8 @@ jobs:
       - name: Sweep open pull requests
         if: steps.hours.outputs.run == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # this repo's own token may not see another repo's CI status; a read-only PAT does
+          GITHUB_TOKEN: ${{ secrets.MANTID_READ_TOKEN || secrets.GITHUB_TOKEN }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
           DRY_RUN: ${{ inputs.DRY_RUN && '--dry-run' || '' }}
