@@ -1,11 +1,10 @@
 name: Sweep mantid PRs
+# every run is a dispatch, so name each by what it does
+run-name: ${{ inputs.RESET && 'Reset' || inputs.DRY_RUN && 'Dry run' || 'Sweep' }}
 
+# Started every 5 minutes in UK working hours by cron-job.org (see README.md), not by `schedule`: GitHub never
+# fired this repo's schedule at all. With no schedule, GitHub's 60-day auto-disable doesn't apply either.
 on:
-  schedule:
-    # cron is UTC only: 08-16 covers UK 09:00-17:00 in both GMT and BST, and the job trims the extra hour.
-    # Minutes 2, 7, 12… rather than */5, because GitHub delays or drops schedules that land on the hour.
-    - cron: '2-59/5 8-16 * * 1-5'
-    - cron: '0 0 * * 1'  # keepalive only
   workflow_dispatch:
     inputs:
       DRY_RUN:
@@ -27,44 +26,18 @@ permissions:
 
 jobs:
   sweep:
-    if: ${{ github.event.schedule != '0 0 * * 1' }}
     runs-on: ubuntu-latest
     timeout-minutes: 4
     steps:
-      - name: Check UK working hours
-        id: hours
-        run: |
-          hour=$(TZ=Europe/London date +%H)
-          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch || ( 10#$hour -ge 9 && 10#$hour -lt 17 ) ]]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Outside UK 09:00-17:00 ($hour:xx) - skipping"
-          fi
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.hours.outputs.run == 'true'
         with:
           persist-credentials: false
 
       - name: Sweep open pull requests
-        if: steps.hours.outputs.run == 'true'
         env:
-          # this repo's own token may not see another repo's CI status; a read-only PAT does
-          GITHUB_TOKEN: ${{ secrets.MANTID_READ_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
           DRY_RUN: ${{ inputs.DRY_RUN && '--dry-run' || '' }}
           RESET: ${{ inputs.RESET && '--reset' || '' }}
         run: python3 pr_review_tracker.py $DRY_RUN $RESET
-
-  # a public repo's schedules are switched off after 60 days without activity, and this repo rarely changes
-  keepalive:
-    if: ${{ github.event.schedule == '0 0 * * 1' }}
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - name: Re-enable this workflow
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh workflow enable sweep.yml --repo "$GITHUB_REPOSITORY"

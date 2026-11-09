@@ -9,7 +9,7 @@ Posts [mantid](https://github.com/mantidproject/mantid) pull requests that are r
 
 "Fully green" means GitHub's combined status for the head commit is `SUCCESS` and every check in `REQUIRED_CONTEXTS` (see `pr_review_tracker.py`) has reported. Jenkins doesn't build bot PRs, so dependabot PRs never qualify.
 
-The sweep runs every 5 minutes between 09:00 and 17:00 UK time, Monday to Friday. Nothing is stored outside Slack: each post carries metadata with the PR number, the last green commit and its status.
+The sweep runs every 5 minutes between 09:00 and 17:00 UK time, Monday to Friday, started by [cron-job.org](https://cron-job.org) (see [Scheduling](#scheduling)). Nothing is stored outside Slack: each post carries metadata with the PR number, the last green commit and its status.
 
 ## Removing posts
 
@@ -41,6 +41,28 @@ Replies people write in a thread can't be deleted by the bot, so they stay behin
    - secret `SLACK_BOT_TOKEN`: the app's *Bot User OAuth Token* (`xoxb-…`)
    - variable `SLACK_CHANNEL_ID`: the channel ID (`C0…`, from the channel's *About* tab), not its name
 
+## Scheduling
+
+GitHub never fired this repo's `schedule` trigger, so an outside scheduler starts the workflow through GitHub's API instead.
+
+1. **A token that can only start this repo's workflows.** On GitHub, go to **Settings → Developer settings → Fine-grained tokens → Generate new token**:
+   - *Repository access*: **Only select repositories** → `mantid-pr-review-tracker`
+   - *Permissions → Repository → Actions*: **Read and write** (*Metadata: read* is added automatically)
+   - give it an expiry, and note when it will need renewing
+2. **A cron-job.org job.** Create a free account at [cron-job.org](https://cron-job.org) and add a job:
+   - *URL*: `https://api.github.com/repos/andy-bridger/mantid-pr-review-tracker/actions/workflows/sweep.yml/dispatches`
+   - *Schedule*: custom, **every 5 minutes**, hours **9–16**, days **Monday–Friday**, time zone **Europe/London**
+   - *Advanced → Request method*: `POST`
+   - *Advanced → Headers*:
+     - `Authorization: Bearer <the token>`
+     - `Accept: application/vnd.github+json`
+     - `X-GitHub-Api-Version: 2022-11-28`
+     - `Content-Type: application/json`
+   - *Advanced → Request body*: `{"ref": "main", "inputs": {"DRY_RUN": "false"}}`
+   - *Notifications*: on, for failed executions
+
+   GitHub answers a successful call with `204 No Content`, and the run shows up in **Actions** named *Sweep*. A run named *Dry run* means the body's `inputs` didn't arrive.
+
 ## Security
 
 The bot token is the one thing worth stealing. These keep what it can do, and who can reach it, small:
@@ -49,6 +71,7 @@ The bot token is the one thing worth stealing. These keep what it can do, and wh
 - **No inbound surface.** The app has no event subscriptions, interactivity, slash commands or redirect URLs, so nothing on the internet can call it. Keep it that way, and keep the app undistributed (installed to the mantid workspace only).
 - **Untrusted PR text is defused.** Anyone can open a mantid PR. Its title, labels, file names and commit messages are escaped before they reach Slack, so they can't become `@channel`, `@here`, user mentions or disguised links. Link and media previews are off.
 - **Nothing third-party sees the token.** The script uses the Python standard library only, and the one action (`actions/checkout`) is pinned to a commit SHA.
+- **The scheduler never sees the Slack token.** cron-job.org holds only a GitHub token that can start this repo's workflows. If that token leaks, the worst anyone can do is trigger extra sweeps, or a reset that the next sweep repairs. It can't change the code, read secrets, or reach Slack.
 - **Secrets aren't exposed to pull requests.** GitHub never passes secrets to workflows run from forks, and the sweep has no `pull_request` trigger.
 
 Repository settings to check:
