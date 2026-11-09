@@ -331,13 +331,25 @@ def _fallback(pr: PullRequest) -> str:
     return f"#{pr.number} {_escape(pr.title)}"
 
 
+def size_emoji(additions: int, deletions: int) -> str:
+    """How big a review the PR is, at a glance."""
+    total = additions + deletions
+    if total < 400:
+        return ":slot_machine:"
+    if total > 2000 or additions >= 1500:
+        return ":warning:"
+    return ":large_green_circle:" if additions < 750 else ":large_orange_circle:"
+
+
 def _parent_message(github: GitHub, pr: PullRequest, status: str) -> dict:
-    headline = f"*#{pr.number}  ·  +{pr.additions} −{pr.deletions}  ·  <{pr.url}|{_escape(pr.title)}>*"
+    # a header block is the only text Slack renders larger, so it carries the number alone
+    header = {"type": "header", "text": {"type": "plain_text", "text": f"#{pr.number}"}}
+    headline = f"{size_emoji(pr.additions, pr.deletions)} *+{pr.additions}/−{pr.deletions}  ·  <{pr.url}|{_escape(pr.title)}>*"
     details = [f"{_escape(pr.author)} → {_escape(pr.base)}", *map(_escape, pr.labels), f":{REMOVE_REACTION}: to remove"]
     if status != ACTIVE:
         details.insert(0, _status_line(pr, status))
     return {
-        "blocks": [_section(headline), {"type": "context", "elements": [{"type": "mrkdwn", "text": "  ·  ".join(details)}]}],
+        "blocks": [header, _section(headline), {"type": "context", "elements": [{"type": "mrkdwn", "text": "  ·  ".join(details)}]}],
         "attachments": [
             _files_attachment(
                 _files_title(pr.changed_files),

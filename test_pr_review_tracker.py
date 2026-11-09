@@ -134,8 +134,21 @@ class MessageTest(unittest.TestCase):
 
     def test_paused_parent_says_why_and_greys_out(self):
         message = tracker._parent_message(FakeGitHub(), make_pr(assignees=("bob",)), ASSIGNED)
-        self.assertIn("Assigned to bob", message["blocks"][1]["elements"][0]["text"])
+        self.assertIn("Assigned to bob", message["blocks"][2]["elements"][0]["text"])
         self.assertEqual(message["attachments"][0]["color"], tracker.PAUSED_COLOUR)
+
+    def test_size_emoji(self):
+        for additions, deletions, emoji in (
+            (399, 0, ":slot_machine:"),
+            (200, 200, ":large_green_circle:"),
+            (749, 0, ":large_green_circle:"),
+            (750, 0, ":large_orange_circle:"),
+            (1499, 0, ":large_orange_circle:"),
+            (1500, 0, ":warning:"),
+            (100, 1901, ":warning:"),
+            (100, 1900, ":large_green_circle:"),
+        ):
+            self.assertEqual(tracker.size_emoji(additions, deletions), emoji, (additions, deletions))
 
     def test_changes_since_lists_new_commits_and_their_diffstat(self):
         comparison = {
