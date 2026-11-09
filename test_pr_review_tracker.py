@@ -53,10 +53,10 @@ class FakeSlack:
     def threads(self):
         return self._threads
 
-    def post(self, blocks, text, thread_ts=None, metadata=None):
+    def post(self, message, text, thread_ts=None, metadata=None):
         self.calls.append(("reply" if thread_ts else "post", text))
 
-    def update(self, ts, blocks, text, metadata):
+    def update(self, ts, message, text, metadata):
         self.calls.append(("update", text))
 
     def delete_thread(self, ts):
@@ -103,18 +103,25 @@ class CiGreenTest(unittest.TestCase):
 
 
 class MessageTest(unittest.TestCase):
-    def test_diffstat_lists_the_largest_changes_first_and_truncates(self):
+    def test_diffstat_is_an_aligned_table_of_the_largest_changes_first(self):
         lines = tracker.diffstat([{"filename": f"f{i}", "additions": i, "deletions": 0} for i in range(20)]).splitlines()
-        self.assertEqual(lines[0], "`f19` +19 −0")
-        self.assertEqual(lines[-1], "…and 5 more files")
-        self.assertEqual(len(lines), tracker.MAX_LISTED_FILES + 1)
+        self.assertEqual(lines[:2], ["```", "+19 −0  f19"])
+        self.assertIn(" +9 −0  f9", lines)
+        self.assertEqual(lines[-2:], ["…and 5 more files", "```"])
+        self.assertEqual(len(lines), tracker.MAX_LISTED_FILES + 3)
+        self.assertEqual(tracker.diffstat([]), "")
 
     def test_section_is_capped(self):
         self.assertEqual(len(tracker._section("x" * 5000)["text"]["text"]), tracker.SECTION_TEXT_LIMIT)
 
     def test_parent_escapes_the_title(self):
-        blocks = tracker._parent_blocks(FakeGitHub(), make_pr(title="a <b> & c"), ACTIVE)
-        self.assertIn("a &lt;b&gt; &amp; c", blocks[0]["text"]["text"])
+        message = tracker._parent_message(FakeGitHub(), make_pr(title="a <b> & c"), ACTIVE)
+        self.assertIn("a &lt;b&gt; &amp; c", message["blocks"][0]["text"]["text"])
+
+    def test_paused_parent_says_why_and_greys_out(self):
+        message = tracker._parent_message(FakeGitHub(), make_pr(assignees=("bob",)), ASSIGNED)
+        self.assertIn("Assigned to bob", message["blocks"][1]["elements"][0]["text"])
+        self.assertEqual(message["attachments"][0]["color"], tracker.PAUSED_COLOUR)
 
     def test_changes_since_lists_new_commits_and_their_diffstat(self):
         comparison = {
@@ -123,7 +130,8 @@ class MessageTest(unittest.TestCase):
             "files": [{"filename": "x", "additions": 1, "deletions": 2}],
         }
         self.assertEqual(
-            tracker._changes_since(FakeGitHub(comparison=comparison), make_pr(), "a" * 40), ["• `bbbbbbb` Fix it", "`x` +1 −2"]
+            tracker._changes_since(FakeGitHub(comparison=comparison), make_pr(), "a" * 40),
+            ("• `bbbbbbb` Fix it", "1 file changed since aaaaaaa", comparison["files"]),
         )
 
     def test_changes_since_shows_the_whole_pr_when_history_was_rewritten(self):
@@ -132,8 +140,9 @@ class MessageTest(unittest.TestCase):
             {"status": "diverged", "commits": [], "files": []},
             {"status": "ahead", "commits": [commit("b", "Merge main", parents=2)], "files": []},
         ):
-            texts = tracker._changes_since(FakeGitHub(comparison=comparison), make_pr(), "a" * 40)
-            self.assertEqual(texts[1], "`whole` +1 −1")
+            summary, _, files = tracker._changes_since(FakeGitHub(comparison=comparison), make_pr(), "a" * 40)
+            self.assertIn("whole PR", summary)
+            self.assertEqual(files, FakeGitHub().files(1))
 
 
 class SlackTest(unittest.TestCase):
@@ -163,8 +172,8 @@ class SlackTest(unittest.TestCase):
     def test_dry_run_reads_but_never_writes(self):
         slack = Slack("token", "C1", dry_run=True)
         with mock.patch.object(slack, "_call", return_value=messages({"ts": "1.0"})) as call, mock.patch("builtins.print"):
-            slack.post([], "text")
-            slack.update("1.0", [], "text", {})
+            slack.post({}, "text")
+            slack.update("1.0", {}, "text", {})
             slack.delete_thread("1.0")
         self.assertEqual([c.args[0] for c in call.call_args_list], ["conversations.replies"])
 

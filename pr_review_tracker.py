@@ -33,6 +33,8 @@ REQUIRED_CONTEXTS = tuple(filter(None, os.environ.get("REQUIRED_CONTEXTS", "").s
 ACTIVE, ASSIGNED, DRAFT = "needs_review", "assigned", "draft"
 
 MAX_LISTED_FILES = 15
+# the attachment bar: Slack's green while a PR needs review, grey while it is paused
+ACTIVE_COLOUR, PAUSED_COLOUR = "#2eb67d", "#9e9ea6"
 MAX_LISTED_COMMITS = 10
 # A section block's text caps at 3000 characters
 SECTION_TEXT_LIMIT = 2800
@@ -243,16 +245,17 @@ class Slack:
                 threads.setdefault(int(payload["pr"]), Thread(message["ts"], int(payload["pr"]), payload["sha"], payload["status"]))
         return threads
 
-    def post(self, blocks: list, text: str, thread_ts: str | None = None, metadata: dict | None = None) -> None:
-        params = {"channel": self.channel, "blocks": blocks, "text": text, "unfurl_links": False}
+    def post(self, message: dict, text: str, thread_ts: str | None = None, metadata: dict | None = None) -> None:
+        """message holds the blocks and, optionally, attachments."""
+        params = {"channel": self.channel, **message, "text": text, "unfurl_links": False}
         if thread_ts:
             params["thread_ts"] = thread_ts
         if metadata:
             params["metadata"] = metadata
         self._write("chat.postMessage", **params)
 
-    def update(self, ts: str, blocks: list, text: str, metadata: dict) -> None:
-        self._write("chat.update", channel=self.channel, ts=ts, blocks=blocks, text=text, metadata=metadata)
+    def update(self, ts: str, message: dict, text: str, metadata: dict) -> None:
+        self._write("chat.update", channel=self.channel, ts=ts, **message, text=text, metadata=metadata)
 
     def delete_thread(self, ts: str) -> None:
         """Replies first, so a half-finished delete leaves the parent and its metadata to retry from."""
@@ -277,20 +280,33 @@ def _section(text: str) -> dict:
 
 
 def diffstat(files: list[dict]) -> str:
-    """One line per file, largest change first."""
+    """A monospace table of the files, largest change first."""
+    if not files:
+        return ""
     files = sorted(files, key=lambda file: file["additions"] + file["deletions"], reverse=True)
-    lines = [f"`{_escape(file['filename'])}` +{file['additions']} −{file['deletions']}" for file in files[:MAX_LISTED_FILES]]
+    shown = files[:MAX_LISTED_FILES]
+    added, deleted = [f"+{file['additions']}" for file in shown], [f"−{file['deletions']}" for file in shown]
+    added_width, deleted_width = max(map(len, added)), max(map(len, deleted))
+    lines = [f"{a:>{added_width}} {d:>{deleted_width}}  {_escape(file['filename'])}" for a, d, file in zip(added, deleted, shown)]
     if len(files) > MAX_LISTED_FILES:
         lines.append(f"…and {len(files) - MAX_LISTED_FILES} more files")
-    return "\n".join(lines)
+    return "```\n" + "\n".join(lines) + "\n```"
+
+
+def _files_title(count: int) -> str:
+    return f"{count} file{'s' * (count != 1)} changed"
+
+
+def _files_attachment(title: str, files: list[dict], colour: str, title_link: str | None = None) -> dict:
+    """Slack folds a long attachment behind "Show more", which no Block Kit block can do."""
+    attachment = {"color": colour, "title": title, "text": diffstat(files), "mrkdwn_in": ["text"], "fallback": title}
+    if title_link:
+        attachment["title_link"] = title_link
+    return attachment
 
 
 def _status_line(pr: PullRequest, status: str) -> str:
-    if status == ASSIGNED:
-        return f":bust_in_silhouette: *Assigned to* {', '.join(pr.assignees)}"
-    if status == DRAFT:
-        return ":construction: *Back to draft*"
-    return f":large_green_circle: *Needs review* — CI green at `{pr.head_sha[:7]}`"
+    return f":bust_in_silhouette: Assigned to {', '.join(pr.assignees)}" if status == ASSIGNED else ":construction: Back to draft"
 
 
 def _fallback(pr: PullRequest) -> str:
@@ -298,24 +314,30 @@ def _fallback(pr: PullRequest) -> str:
     return f"#{pr.number} {pr.title}"
 
 
-def _parent_blocks(github: GitHub, pr: PullRequest, status: str) -> list[dict]:
-    labels = "".join(f" `{_escape(label)}`" for label in pr.labels)
-    heading = f"<{pr.url}|#{pr.number} {_escape(pr.title)}>\nby `{pr.author}` → `{pr.base}`" + (f" ·{labels}" if labels else "")
-    return [
-        _section(heading),
-        _section(_status_line(pr, status)),
-        _section(
-            f"*{pr.changed_files} file{'s' * (pr.changed_files != 1)}* +{pr.additions} −{pr.deletions}\n{diffstat(github.files(pr.number))}"
-        ),
-        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"<{pr.url}/files|Files changed>"}]},
-    ]
+def _parent_message(github: GitHub, pr: PullRequest, status: str) -> dict:
+    headline = f"*#{pr.number}  ·  +{pr.additions} −{pr.deletions}  ·  <{pr.url}|{_escape(pr.title)}>*"
+    details = [f"{_escape(pr.author)} → {_escape(pr.base)}", *map(_escape, pr.labels)]
+    if status != ACTIVE:
+        details.insert(0, _status_line(pr, status))
+    return {
+        "blocks": [_section(headline), {"type": "context", "elements": [{"type": "mrkdwn", "text": "  ·  ".join(details)}]}],
+        "attachments": [
+            _files_attachment(
+                _files_title(pr.changed_files),
+                github.files(pr.number),
+                ACTIVE_COLOUR if status == ACTIVE else PAUSED_COLOUR,
+                f"{pr.url}/files",
+            )
+        ],
+    }
 
 
-def _changes_since(github: GitHub, pr: PullRequest, sha: str) -> list[str]:
+def _changes_since(github: GitHub, pr: PullRequest, sha: str) -> tuple[str, str, list[dict]]:
+    """The summary line, the files attachment's title, and the files changed since sha."""
     comparison = github.compare(sha, pr.head_sha)
     # after a rebase, force-push or merge from the base branch the comparison is more than this PR's changes
     if comparison is None or comparison["status"] != "ahead" or any(len(commit["parents"]) > 1 for commit in comparison["commits"]):
-        return [":warning: History was rewritten or merged — whole PR shown", diffstat(github.files(pr.number))]
+        return ":warning: History was rewritten or merged, so this is the whole PR", _files_title(pr.changed_files), github.files(pr.number)
 
     commits = comparison["commits"]
     lines = [
@@ -323,32 +345,36 @@ def _changes_since(github: GitHub, pr: PullRequest, sha: str) -> list[str]:
     ]
     if len(commits) > MAX_LISTED_COMMITS:
         lines.insert(0, f"…{len(commits) - MAX_LISTED_COMMITS} earlier commits")
-    return ["\n".join(lines), diffstat(comparison["files"])]
+    return "\n".join(lines), f"{_files_title(len(comparison['files']))} since {sha[:7]}", comparison["files"]
 
 
-def _reply_blocks(github: GitHub, pr: PullRequest, thread: Thread, status: str) -> list[dict]:
+def _reply_message(github: GitHub, pr: PullRequest, thread: Thread, status: str) -> dict:
     if status != ACTIVE:
-        return [_section(_status_line(pr, status))]
+        return {"blocks": [_section(_status_line(pr, status))]}
     heading = (
         ":arrows_counterclockwise: *New commits pass CI*"
         if thread.status == ACTIVE
         else ":leftwards_arrow_with_hook: *Back in the review queue*"
     )
-    heading += f" at `{pr.head_sha[:7]}`"
     if pr.head_sha == thread.sha:
-        return [_section(heading)]
-    return [_section(heading), *(_section(text) for text in _changes_since(github, pr, thread.sha))]
+        return {"blocks": [_section(heading)]}
+    summary, title, files = _changes_since(github, pr, thread.sha)
+    added, deleted = sum(file["additions"] for file in files), sum(file["deletions"] for file in files)
+    return {
+        "blocks": [_section(f"{heading}  ·  +{added} −{deleted}\n{summary}")],
+        "attachments": [_files_attachment(title, files, ACTIVE_COLOUR)],
+    }
 
 
 def _apply(github: GitHub, slack: Slack, pr: PullRequest, thread: Thread | None, action: str) -> None:
     print(f"#{pr.number}: {action}")
     metadata = {"event_type": METADATA_EVENT, "event_payload": {"pr": pr.number, "sha": pr.head_sha, "status": action}}
     if thread is None:
-        slack.post(_parent_blocks(github, pr, action), _fallback(pr), metadata=metadata)
+        slack.post(_parent_message(github, pr, action), _fallback(pr), metadata=metadata)
         return
     # parent first: a failed reply loses one update, a failed parent edit would repost it next sweep
-    slack.update(thread.ts, _parent_blocks(github, pr, action), _fallback(pr), metadata)
-    slack.post(_reply_blocks(github, pr, thread, action), _fallback(pr), thread_ts=thread.ts)
+    slack.update(thread.ts, _parent_message(github, pr, action), _fallback(pr), metadata)
+    slack.post(_reply_message(github, pr, thread, action), _fallback(pr), thread_ts=thread.ts)
 
 
 def _attempt(number: int, write, *args) -> int:
