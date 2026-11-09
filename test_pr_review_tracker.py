@@ -172,6 +172,10 @@ class SweepTest(unittest.TestCase):
         self.assertEqual(tracker.sweep(FakeGitHub([make_pr(ci_green=False)]), slack), 0)
         self.assertEqual(slack.calls, [("delete", "5.0")])
 
+    def test_warns_when_no_ci_status_is_visible(self, print_):
+        tracker.sweep(FakeGitHub([make_pr(ci_green=False), make_pr(number=2, ci_green=False)]), FakeSlack())
+        self.assertIn("::warning::No open PR has a visible CI status", print_.call_args_list[-1].args[0])
+
     def test_no_open_prs_deletes_nothing(self, _):
         slack = FakeSlack({5: make_thread(ts="5.0", pr=5)})
         tracker.sweep(FakeGitHub(), slack)

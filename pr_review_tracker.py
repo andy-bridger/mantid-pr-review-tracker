@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter
 from dataclasses import dataclass
 
 TRACKED_REPOSITORY = os.environ.get("TRACKED_REPOSITORY", "mantidproject/mantid")
@@ -68,6 +69,8 @@ class PullRequest:
     additions: int
     deletions: int
     changed_files: int
+    # the rollup's own state, kept for the sweep summary; None when GitHub returned no rollup
+    ci_state: str | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +138,7 @@ def _pull_request(node: dict) -> PullRequest:
         additions=node["additions"],
         deletions=node["deletions"],
         changed_files=node["changedFiles"],
+        ci_state=(commit["statusCheckRollup"] or {}).get("state"),
     )
 
 
@@ -353,6 +357,11 @@ def _attempt(number: int, write, *args) -> int:
 def sweep(github: GitHub, slack: Slack) -> int:
     threads = slack.threads()
     prs = {pr.number: pr for pr in github.open_pull_requests()}
+    states = Counter(pr.ci_state for pr in prs.values())
+    print(f"{len(prs)} open PRs, {sum(pr.ci_green for pr in prs.values())} green, {len(threads)} tracked; CI states {dict(states)}")
+    # a token that can't read the tracked repo's checks gets no rollup at all, rather than an error
+    if prs and states[None] == len(prs):
+        print("::warning::No open PR has a visible CI status - the GitHub token probably can't read the tracked repo's checks")
     gone = threads.keys() - prs.keys()
     if gone and not prs:
         print("::warning::No open PRs returned but threads exist - not deleting anything")
