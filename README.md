@@ -2,9 +2,9 @@
 
 Posts [mantid](https://github.com/mantidproject/mantid) pull requests that are ready for review to a Slack channel, and follows each one in its message's thread.
 
-- A PR is posted once it is **open, not a draft, has no assignees and its CI is fully green**. The post shows the PR number, its size and a link, then the author, base branch and labels, then a collapsible list of the changed files.
+- A PR is posted once it is **open, not a draft, nobody has picked it up, and its CI is fully green**. Picked up means an assignee, or anyone in GitHub's *Reviewers* sidebar: a requested reviewer, or someone who has already reviewed it. Bots and the PR's author don't count. The post shows the PR number, its size and a link, then the author, base branch and labels, then a collapsible list of the changed files.
 - Each later push that goes green is a thread reply with the new commits and the files changed since the last green post.
-- Assigning the PR, or converting it back to draft, edits the post's status and pauses the thread. Unassigning it, or marking it ready again, resumes it.
+- Picking the PR up, or converting it back to draft, edits the post's status and pauses the thread. Dropping it again, or marking it ready, resumes it.
 - Merging or closing the PR deletes the thread.
 
 "Fully green" means GitHub's combined status for the head commit is `SUCCESS` and every check in `REQUIRED_CONTEXTS` (see `pr_review_tracker.py`) has reported. Jenkins doesn't build bot PRs, so dependabot PRs never qualify.

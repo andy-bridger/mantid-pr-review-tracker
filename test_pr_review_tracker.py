@@ -84,6 +84,10 @@ class DecideTest(unittest.TestCase):
             self.assertEqual(tracker.decide(make_pr(), make_thread(status=status)), ACTIVE)
             self.assertIsNone(tracker.decide(make_pr(assignees=("bob",), is_draft=True), make_thread(status=status)))
 
+    def test_a_reviewer_counts_as_taken_like_an_assignee(self):
+        self.assertIsNone(tracker.decide(make_pr(reviewers=("bob",)), None))
+        self.assertEqual(tracker.decide(make_pr(reviewers=("bob",)), make_thread()), ASSIGNED)
+
     def test_reaction_removes_a_post_whatever_its_status(self):
         for status in (ACTIVE, ASSIGNED, DRAFT):
             self.assertEqual(tracker.decide(make_pr(), make_thread(status=status, removed_by="U1")), REMOVED)
@@ -93,6 +97,34 @@ class DecideTest(unittest.TestCase):
         self.assertIsNone(tracker.decide(make_pr(), stub))
         self.assertIsNone(tracker.decide(make_pr(head_sha="b" * 40, ci_green=False), stub))
         self.assertEqual(tracker.decide(make_pr(head_sha="b" * 40), stub), ACTIVE)
+
+
+class ParseTest(unittest.TestCase):
+    def test_reviewers_are_requested_users_teams_and_past_human_reviewers(self):
+        def actor(typename, login=None):
+            return {"__typename": typename, **({"login": login} if login else {})}
+
+        node = {
+            "number": 1,
+            "title": "t",
+            "url": "u",
+            "isDraft": False,
+            "additions": 1,
+            "deletions": 1,
+            "changedFiles": 1,
+            "baseRefName": "main",
+            "author": {"login": "alice"},
+            "assignees": {"nodes": [{"login": "carol"}]},
+            "labels": {"nodes": []},
+            "reviewRequests": {"nodes": [{"requestedReviewer": actor("User", "bob")}, {"requestedReviewer": actor("Team")}]},
+            "latestReviews": {
+                "nodes": [{"author": actor("User", "dave")}, {"author": actor("Bot", "coderabbitai")}, {"author": actor("User", "alice")}]
+            },
+            "commits": {"nodes": [{"commit": {"oid": "a" * 40, "statusCheckRollup": None}}]},
+        }
+        pr = tracker._pull_request(node)
+        self.assertEqual(pr.reviewers, ("bob", "a team", "dave"))
+        self.assertEqual(pr.taken_by, ("carol", "bob", "a team", "dave"))
 
 
 class CiGreenTest(unittest.TestCase):
@@ -141,7 +173,7 @@ class MessageTest(unittest.TestCase):
 
     def test_paused_parent_says_why_and_greys_out(self):
         message = tracker._parent_message(FakeGitHub(), make_pr(assignees=("bob",)), ASSIGNED)
-        self.assertIn("Assigned to bob", message["blocks"][2]["elements"][0]["text"])
+        self.assertIn("Picked up by bob", message["blocks"][2]["elements"][0]["text"])
         self.assertEqual(message["attachments"][0]["color"], tracker.PAUSED_COLOUR)
 
     def test_size_emoji(self):

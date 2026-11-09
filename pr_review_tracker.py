@@ -53,6 +53,8 @@ query($owner: String!, $name: String!, $cursor: String) {
         author { login }
         assignees(first: 10) { nodes { login } }
         labels(first: 20) { nodes { name } }
+        reviewRequests(first: 10) { nodes { requestedReviewer { __typename ... on User { login } } } }
+        latestReviews(first: 20) { nodes { author { __typename login } } }
         commits(last: 1) { nodes { commit { oid statusCheckRollup { state
           contexts(first: 100) { nodes { ... on CheckRun { name } ... on StatusContext { context } } } } } } }
       }
@@ -79,6 +81,13 @@ class PullRequest:
     # kept for the sweep log; ci_state is None when GitHub returned no rollup
     ci_state: str | None = None
     ci_contexts: frozenset[str] = frozenset()
+    # GitHub's Reviewers sidebar: anyone requested, plus anyone who has already reviewed (which clears their request)
+    reviewers: tuple[str, ...] = ()
+
+    @property
+    def taken_by(self) -> tuple[str, ...]:
+        """Whoever has picked the PR up, as assignee or reviewer. Empty means it needs someone."""
+        return tuple(dict.fromkeys(self.assignees + self.reviewers))
 
 
 @dataclass(frozen=True)
@@ -112,13 +121,13 @@ def decide(pr: PullRequest, thread: Thread | None) -> str | None:
     """The action for an open PR this sweep, which is also its thread's new status. None means stay quiet."""
     if thread and thread.removed_by and thread.status != REMOVED:
         return REMOVED
-    if not pr.is_draft and not pr.assignees and pr.ci_green:
+    if not pr.is_draft and not pr.taken_by and pr.ci_green:
         if thread and thread.sha == pr.head_sha and thread.status in (ACTIVE, REMOVED):
             return None  # nothing new, or removed and not pushed to since
         return ACTIVE  # first post, back in the queue, or a new green head
     if thread is None or thread.status != ACTIVE:
         return None
-    if pr.assignees:
+    if pr.taken_by:
         return ASSIGNED
     if pr.is_draft:
         return DRAFT
@@ -140,12 +149,22 @@ def _request(url: str, *, headers: dict, data: bytes | None = None) -> dict | li
 
 def _pull_request(node: dict) -> PullRequest:
     commit = node["commits"]["nodes"][0]["commit"]
+    # a deleted account comes back as null
+    author = (node["author"] or {}).get("login", "ghost")
+    # a team request counts too, but only its type is asked for, since reading a team can need org access
+    requested = [request["requestedReviewer"] or {} for request in node["reviewRequests"]["nodes"]]
+    reviewers = [reviewer.get("login", "a team") for reviewer in requested if reviewer.get("__typename") in ("User", "Team")]
+    # bots (e.g. automated review tools) and the author's own replies to review comments don't count
+    reviewers += [
+        review["author"]["login"]
+        for review in node["latestReviews"]["nodes"]
+        if (review["author"] or {}).get("__typename") == "User" and review["author"]["login"] != author
+    ]
     return PullRequest(
         number=node["number"],
         title=node["title"],
         url=node["url"],
-        # a deleted account comes back as null
-        author=(node["author"] or {}).get("login", "ghost"),
+        author=author,
         base=node["baseRefName"],
         is_draft=node["isDraft"],
         assignees=tuple(assignee["login"] for assignee in node["assignees"]["nodes"]),
@@ -157,6 +176,7 @@ def _pull_request(node: dict) -> PullRequest:
         changed_files=node["changedFiles"],
         ci_state=(commit["statusCheckRollup"] or {}).get("state"),
         ci_contexts=context_names(commit["statusCheckRollup"]),
+        reviewers=tuple(reviewers),
     )
 
 
@@ -323,7 +343,7 @@ def _files_attachment(title: str, files: list[dict], colour: str, title_link: st
 
 
 def _status_line(pr: PullRequest, status: str) -> str:
-    return f":bust_in_silhouette: Assigned to {_escape(', '.join(pr.assignees))}" if status == ASSIGNED else ":construction: Back to draft"
+    return f":bust_in_silhouette: Picked up by {_escape(', '.join(pr.taken_by))}" if status == ASSIGNED else ":construction: Back to draft"
 
 
 def _fallback(pr: PullRequest) -> str:
@@ -445,7 +465,7 @@ def sweep(github: GitHub, slack: Slack) -> int:
     if prs and states[None] == len(prs):
         print("::warning::No open PR has a visible CI status - the GitHub token probably can't read the tracked repo's checks")
     for pr in prs.values():
-        if pr.ci_state == "SUCCESS" and not pr.ci_green and not pr.is_draft and not pr.assignees:
+        if pr.ci_state == "SUCCESS" and not pr.ci_green and not pr.is_draft and not pr.taken_by:
             missing = sorted(set(REQUIRED_CONTEXTS) - pr.ci_contexts)
             print(f"#{pr.number}: CI is SUCCESS but {missing} not reported; saw {sorted(pr.ci_contexts)}")
     gone = threads.keys() - prs.keys()
