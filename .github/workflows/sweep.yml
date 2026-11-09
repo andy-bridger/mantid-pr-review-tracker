@@ -1,0 +1,63 @@
+name: Sweep mantid PRs
+
+on:
+  schedule:
+    # cron is UTC only: 08-16 covers UK 09:00-17:00 in both GMT and BST, and the job trims the extra hour
+    - cron: '*/5 8-16 * * 1-5'
+    - cron: '0 0 * * 1'  # keepalive only
+  workflow_dispatch:
+    inputs:
+      DRY_RUN:
+        description: 'Read GitHub and Slack and log what would change, without writing to Slack'
+        type: boolean
+        default: true
+
+# sweeps must not overlap, or two of them can post the same PR
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    if: ${{ github.event.schedule != '0 0 * * 1' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Check UK working hours
+        id: hours
+        run: |
+          hour=$(TZ=Europe/London date +%H)
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch || ( 10#$hour -ge 9 && 10#$hour -lt 17 ) ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Outside UK 09:00-17:00 ($hour:xx) - skipping"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.hours.outputs.run == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Sweep open pull requests
+        if: steps.hours.outputs.run == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
+          DRY_RUN: ${{ inputs.DRY_RUN && '--dry-run' || '' }}
+        run: python3 pr_review_tracker.py $DRY_RUN
+
+  # a public repo's schedules are switched off after 60 days without activity, and this repo rarely changes
+  keepalive:
+    if: ${{ github.event.schedule == '0 0 * * 1' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Re-enable this workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow enable sweep.yml --repo "$GITHUB_REPOSITORY"
