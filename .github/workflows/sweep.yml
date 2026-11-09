@@ -11,6 +11,10 @@ on:
         description: 'Read GitHub and Slack and log what would change, without writing to Slack'
         type: boolean
         default: true
+      RESET:
+        description: 'Delete every post and thread the bot has made, instead of sweeping (the next sweep reposts what still qualifies)'
+        type: boolean
+        default: false
 
 # sweeps must not overlap, or two of them can post the same PR
 concurrency:
@@ -49,7 +53,8 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
           DRY_RUN: ${{ inputs.DRY_RUN && '--dry-run' || '' }}
-        run: python3 pr_review_tracker.py $DRY_RUN
+          RESET: ${{ inputs.RESET && '--reset' || '' }}
+        run: python3 pr_review_tracker.py $DRY_RUN $RESET
 
   # a public repo's schedules are switched off after 60 days without activity, and this repo rarely changes
   keepalive:

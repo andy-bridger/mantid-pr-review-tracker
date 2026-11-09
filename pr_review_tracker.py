@@ -9,6 +9,7 @@ head and the thread's status, so a sweep can run from nothing. See README.md for
 import argparse
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -30,7 +31,10 @@ DEFAULT_REQUIRED_CONTEXTS = (
 # semicolon-separated, because the check names themselves contain commas
 REQUIRED_CONTEXTS = tuple(filter(None, os.environ.get("REQUIRED_CONTEXTS", "").split(";"))) or DEFAULT_REQUIRED_CONTEXTS
 
-ACTIVE, ASSIGNED, DRAFT = "needs_review", "assigned", "draft"
+ACTIVE, ASSIGNED, DRAFT, REMOVED = "needs_review", "assigned", "draft", "removed"
+# Members can't delete an app's messages, so anyone reacting with this on a post asks the next sweep to
+REMOVE_REACTION = "wastebasket"
+SLACK_USER_ID = re.compile(r"[UW][A-Z0-9]+")
 
 MAX_LISTED_FILES = 15
 # the attachment bar: Slack's green while a PR needs review, grey while it is paused
@@ -83,6 +87,8 @@ class Thread:
     pr: int
     sha: str
     status: str
+    # who reacted with REMOVE_REACTION, if anyone
+    removed_by: str | None = None
 
 
 class SlackError(RuntimeError):
@@ -104,9 +110,12 @@ def ci_green(rollup: dict | None) -> bool:
 
 def decide(pr: PullRequest, thread: Thread | None) -> str | None:
     """The action for an open PR this sweep, which is also its thread's new status. None means stay quiet."""
+    if thread and thread.removed_by and thread.status != REMOVED:
+        return REMOVED
     if not pr.is_draft and not pr.assignees and pr.ci_green:
-        # first post, back in the queue, or a new green head
-        return None if thread and thread.status == ACTIVE and thread.sha == pr.head_sha else ACTIVE
+        if thread and thread.sha == pr.head_sha and thread.status in (ACTIVE, REMOVED):
+            return None  # nothing new, or removed and not pushed to since
+        return ACTIVE  # first post, back in the queue, or a new green head
     if thread is None or thread.status != ACTIVE:
         return None
     if pr.assignees:
@@ -234,15 +243,21 @@ class Slack:
             if not (cursor := response.get("response_metadata", {}).get("next_cursor")):
                 return messages
 
+    def parents(self) -> list[dict]:
+        """Every parent message this tracker has posted, newest first."""
+        history = self._messages("conversations.history", include_all_metadata="true")
+        return [message for message in history if message.get("metadata", {}).get("event_type") == METADATA_EVENT]
+
     def threads(self) -> dict[int, Thread]:
         """Every tracked PR's parent message. Newest wins if one was ever duplicated."""
         threads = {}
-        # history comes newest first
-        for message in self._messages("conversations.history", include_all_metadata="true"):
-            metadata = message.get("metadata", {})
-            if metadata.get("event_type") == METADATA_EVENT:
-                payload = metadata["event_payload"]
-                threads.setdefault(int(payload["pr"]), Thread(message["ts"], int(payload["pr"]), payload["sha"], payload["status"]))
+        for message in self.parents():
+            payload = message["metadata"]["event_payload"]
+            removers = [
+                user for reaction in message.get("reactions", []) if reaction["name"] == REMOVE_REACTION for user in reaction["users"]
+            ]
+            thread = Thread(message["ts"], int(payload["pr"]), payload["sha"], payload["status"], next(iter(removers), None))
+            threads.setdefault(thread.pr, thread)
         return threads
 
     def post(self, message: dict, text: str, thread_ts: str | None = None, metadata: dict | None = None) -> None:
@@ -257,10 +272,12 @@ class Slack:
     def update(self, ts: str, message: dict, text: str, metadata: dict) -> None:
         self._write("chat.update", channel=self.channel, ts=ts, **message, text=text, metadata=metadata)
 
-    def delete_thread(self, ts: str) -> None:
+    def delete_thread(self, ts: str, keep_parent: bool = False) -> None:
         """Replies first, so a half-finished delete leaves the parent and its metadata to retry from."""
         # the parent is the oldest message, so it goes last
         for message_ts in sorted({message["ts"] for message in self._messages("conversations.replies", ts=ts)}, key=float, reverse=True):
+            if keep_parent and message_ts == ts:
+                continue
             try:
                 self._write("chat.delete", channel=self.channel, ts=message_ts)
             except SlackError as error:
@@ -316,7 +333,7 @@ def _fallback(pr: PullRequest) -> str:
 
 def _parent_message(github: GitHub, pr: PullRequest, status: str) -> dict:
     headline = f"*#{pr.number}  ·  +{pr.additions} −{pr.deletions}  ·  <{pr.url}|{_escape(pr.title)}>*"
-    details = [f"{_escape(pr.author)} → {_escape(pr.base)}", *map(_escape, pr.labels)]
+    details = [f"{_escape(pr.author)} → {_escape(pr.base)}", *map(_escape, pr.labels), f":{REMOVE_REACTION}: to remove"]
     if status != ACTIVE:
         details.insert(0, _status_line(pr, status))
     return {
@@ -330,6 +347,14 @@ def _parent_message(github: GitHub, pr: PullRequest, status: str) -> dict:
             )
         ],
     }
+
+
+def _stub_message(pr: PullRequest, removed_by: str) -> dict:
+    # the ID comes from Slack, but is checked before it becomes a mention all the same
+    who = f" by <@{removed_by}>" if SLACK_USER_ID.fullmatch(removed_by) else ""
+    text = f":{REMOVE_REACTION}: <{pr.url}|#{pr.number}> removed{who} · it comes back on its next green push"
+    # an empty attachments list clears the files attachment from the post being shrunk
+    return {"blocks": [{"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}], "attachments": []}
 
 
 def _changes_since(github: GitHub, pr: PullRequest, sha: str) -> tuple[str, str, list[dict]]:
@@ -369,6 +394,15 @@ def _reply_message(github: GitHub, pr: PullRequest, thread: Thread, status: str)
 def _apply(github: GitHub, slack: Slack, pr: PullRequest, thread: Thread | None, action: str) -> None:
     print(f"#{pr.number}: {action}")
     metadata = {"event_type": METADATA_EVENT, "event_payload": {"pr": pr.number, "sha": pr.head_sha, "status": action}}
+    if action == REMOVED:
+        # replies first: if the shrink then fails, the reaction is still there to retry from
+        slack.delete_thread(thread.ts, keep_parent=True)
+        slack.update(thread.ts, _stub_message(pr, thread.removed_by), _fallback(pr), metadata)
+        return
+    if thread is not None and thread.status == REMOVED:
+        # a fresh post at the bottom of the channel, not the stub expanding where nobody will see it
+        slack.delete_thread(thread.ts)
+        thread = None
     if thread is None:
         slack.post(_parent_message(github, pr, action), _fallback(pr), metadata=metadata)
         return
@@ -415,14 +449,24 @@ def sweep(github: GitHub, slack: Slack) -> int:
     return 1 if failures else 0
 
 
+def reset(slack: Slack) -> int:
+    """Delete every post and thread this tracker has made; the next sweep reposts whatever still qualifies."""
+    parents = slack.parents()
+    print(f"Deleting {len(parents)} posts")
+    failures = sum(_attempt(parent["metadata"]["event_payload"]["pr"], slack.delete_thread, parent["ts"]) for parent in parents)
+    return 1 if failures else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dry-run", action="store_true", help="read GitHub and Slack, log every Slack write and send none")
+    parser.add_argument("--reset", action="store_true", help="delete every post and thread this tracker has made, instead of sweeping")
     args = parser.parse_args(argv)
 
-    github = GitHub(os.environ["GITHUB_TOKEN"])
     slack = Slack(os.environ["SLACK_BOT_TOKEN"], os.environ["SLACK_CHANNEL_ID"], args.dry_run)
-    return sweep(github, slack)
+    if args.reset:
+        return reset(slack)
+    return sweep(GitHub(os.environ["GITHUB_TOKEN"]), slack)
 
 
 if __name__ == "__main__":
