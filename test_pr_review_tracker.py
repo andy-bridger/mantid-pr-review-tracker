@@ -85,6 +85,10 @@ class DecideTest(unittest.TestCase):
 
 
 class CiGreenTest(unittest.TestCase):
+    def test_default_required_contexts_survive_parsing(self):
+        # the names contain commas, which once split them into fragments that never matched
+        self.assertEqual(REQUIRED_CONTEXTS, tracker.DEFAULT_REQUIRED_CONTEXTS)
+
     def test_needs_success_and_every_required_context(self):
         def rollup(state="SUCCESS", names=REQUIRED_CONTEXTS):
             return {"state": state, "contexts": {"nodes": [{"name": name} for name in names]}}

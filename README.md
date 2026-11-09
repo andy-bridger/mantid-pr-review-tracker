@@ -40,7 +40,7 @@ python -m unittest -v test_pr_review_tracker
 GITHUB_TOKEN=<token> SLACK_BOT_TOKEN=<xoxb-…> SLACK_CHANNEL_ID=<C0…> python pr_review_tracker.py --dry-run
 ```
 
-`TRACKED_REPOSITORY` (default `mantidproject/mantid`) and `REQUIRED_CONTEXTS` (comma-separated) can be overridden to test against a scratch repo. For example, use `REQUIRED_CONTEXTS=fake-ci` and fake CI with `gh api repos/<you>/<scratch>/statuses/<sha> -f state=success -f context=fake-ci`.
+`TRACKED_REPOSITORY` (default `mantidproject/mantid`) and `REQUIRED_CONTEXTS` (semicolon-separated, because check names contain commas) can be overridden to test against a scratch repo. For example, use `REQUIRED_CONTEXTS=fake-ci` and fake CI with `gh api repos/<you>/<scratch>/statuses/<sha> -f state=success -f context=fake-ci`.
 
 From GitHub, **Actions → Sweep mantid PRs → Run workflow** runs one sweep at any hour. It defaults to a dry run.
 

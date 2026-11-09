@@ -27,7 +27,8 @@ DEFAULT_REQUIRED_CONTEXTS = (
     "pre-commit.ci - pr",
     "Conda: osx",
 )
-REQUIRED_CONTEXTS = tuple(filter(None, os.environ.get("REQUIRED_CONTEXTS", ",".join(DEFAULT_REQUIRED_CONTEXTS)).split(",")))
+# semicolon-separated, because the check names themselves contain commas
+REQUIRED_CONTEXTS = tuple(filter(None, os.environ.get("REQUIRED_CONTEXTS", "").split(";"))) or DEFAULT_REQUIRED_CONTEXTS
 
 ACTIVE, ASSIGNED, DRAFT = "needs_review", "assigned", "draft"
 
