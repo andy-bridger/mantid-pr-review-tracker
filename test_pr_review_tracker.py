@@ -1,4 +1,5 @@
 import dataclasses
+import json
 import unittest
 from unittest import mock
 
@@ -114,9 +115,12 @@ class MessageTest(unittest.TestCase):
     def test_section_is_capped(self):
         self.assertEqual(len(tracker._section("x" * 5000)["text"]["text"]), tracker.SECTION_TEXT_LIMIT)
 
-    def test_parent_escapes_the_title(self):
-        message = tracker._parent_message(FakeGitHub(), make_pr(title="a <b> & c"), ACTIVE)
-        self.assertIn("a &lt;b&gt; &amp; c", message["blocks"][0]["text"]["text"])
+    def test_pr_text_cannot_mention_or_link(self):
+        # anyone can open a mantid PR, so its text must not reach Slack as <!channel>, <@U…> or <url|…>
+        pr = make_pr(title="<!channel> & <https://evil|x>", labels=("<!here>",), assignees=("<@U1>",))
+        rendered = json.dumps(tracker._parent_message(FakeGitHub(), pr, ASSIGNED)) + tracker._fallback(pr)
+        for control in ("<!", "<@", "<https://evil"):
+            self.assertNotIn(control, rendered)
 
     def test_paused_parent_says_why_and_greys_out(self):
         message = tracker._parent_message(FakeGitHub(), make_pr(assignees=("bob",)), ASSIGNED)

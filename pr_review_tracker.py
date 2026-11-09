@@ -247,7 +247,7 @@ class Slack:
 
     def post(self, message: dict, text: str, thread_ts: str | None = None, metadata: dict | None = None) -> None:
         """message holds the blocks and, optionally, attachments."""
-        params = {"channel": self.channel, **message, "text": text, "unfurl_links": False}
+        params = {"channel": self.channel, **message, "text": text, "unfurl_links": False, "unfurl_media": False}
         if thread_ts:
             params["thread_ts"] = thread_ts
         if metadata:
@@ -306,12 +306,12 @@ def _files_attachment(title: str, files: list[dict], colour: str, title_link: st
 
 
 def _status_line(pr: PullRequest, status: str) -> str:
-    return f":bust_in_silhouette: Assigned to {', '.join(pr.assignees)}" if status == ASSIGNED else ":construction: Back to draft"
+    return f":bust_in_silhouette: Assigned to {_escape(', '.join(pr.assignees))}" if status == ASSIGNED else ":construction: Back to draft"
 
 
 def _fallback(pr: PullRequest) -> str:
     """The notification preview and screen reader text."""
-    return f"#{pr.number} {pr.title}"
+    return f"#{pr.number} {_escape(pr.title)}"
 
 
 def _parent_message(github: GitHub, pr: PullRequest, status: str) -> dict:
