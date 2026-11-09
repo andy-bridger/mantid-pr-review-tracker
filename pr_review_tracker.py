@@ -343,9 +343,11 @@ def size_emoji(additions: int, deletions: int) -> str:
 
 
 def _parent_message(github: GitHub, pr: PullRequest, status: str) -> dict:
-    # a header block is the only text Slack renders larger, so it carries the number alone
-    header = {"type": "header", "text": {"type": "plain_text", "text": f"#{pr.number}"}}
-    headline = f"{size_emoji(pr.additions, pr.deletions)} *+{pr.additions}/−{pr.deletions}  ·  <{pr.url}|{_escape(pr.title)}>*"
+    # A header block is the only text Slack renders larger, but it is plain text: it can't hold the link, and
+    # needs no escaping because nothing in it is parsed as a mention or link. It caps at 150 characters.
+    title = f"#{pr.number} · {pr.title}"
+    header = {"type": "header", "text": {"type": "plain_text", "text": title if len(title) <= 150 else title[:149] + "…"}}
+    headline = f"{size_emoji(pr.additions, pr.deletions)} *+{pr.additions}/−{pr.deletions}*  ·  <{pr.url}|View on GitHub>"
     details = [f"{_escape(pr.author)} → {_escape(pr.base)}", *map(_escape, pr.labels), f":{REMOVE_REACTION}: to remove"]
     if status != ACTIVE:
         details.insert(0, _status_line(pr, status))

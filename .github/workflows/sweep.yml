@@ -2,8 +2,9 @@ name: Sweep mantid PRs
 
 on:
   schedule:
-    # cron is UTC only: 08-16 covers UK 09:00-17:00 in both GMT and BST, and the job trims the extra hour
-    - cron: '*/5 8-16 * * 1-5'
+    # cron is UTC only: 08-16 covers UK 09:00-17:00 in both GMT and BST, and the job trims the extra hour.
+    # Minutes 2, 7, 12… rather than */5, because GitHub delays or drops schedules that land on the hour.
+    - cron: '2-59/5 8-16 * * 1-5'
     - cron: '0 0 * * 1'  # keepalive only
   workflow_dispatch:
     inputs:
